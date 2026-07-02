@@ -14,11 +14,12 @@ export class Matcher implements CandidateMatcher {
       const excerpts = buildExcerpts(document.text);
       for (const excerpt of excerpts) {
         const parsedCandidate = this.tokenizer.tokenize(excerpt);
-        const lexicalScore = lexicalSimilarity(parsedQuery.tokens, parsedCandidate.tokens);
-        const strongProductHit = parsedQuery.productMain && parsedCandidate.productMain === parsedQuery.productMain;
-        const strongBrandHit = parsedQuery.brand && parsedCandidate.brand === parsedQuery.brand;
+        const lexicalScore = lexicalSimilarity(parsedQuery, parsedCandidate, excerpt);
+        const strongProductHit = Boolean(parsedQuery.productMain && parsedCandidate.productMain === parsedQuery.productMain);
+        const strongBrandHit = Boolean(parsedQuery.brand && parsedCandidate.brand === parsedQuery.brand);
+        const strongTextHit = containsImportantTerm(parsedQuery, excerpt);
 
-        if (lexicalScore >= 0.18 || strongProductHit || strongBrandHit) {
+        if (lexicalScore >= 0.12 || strongProductHit || strongBrandHit || strongTextHit) {
           candidates.push({
             document,
             item: parsedCandidate,
@@ -32,15 +33,16 @@ export class Matcher implements CandidateMatcher {
 
     return dedupeCandidates(candidates)
       .sort((a, b) => b.lexicalScore - a.lexicalScore)
-      .slice(0, 100);
+      .slice(0, 120);
   }
 }
 
 function buildExcerpts(text: string): string[] {
   const chunks = text
-    .split(/\n|\.\s+/)
+    .split(/\n|\.\s+|;\s+/)
     .map((line) => line.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .slice(0, 250);
 
   if (chunks.length <= 1) return [text];
   return chunks.map((chunk, index) => {
@@ -50,15 +52,37 @@ function buildExcerpts(text: string): string[] {
   });
 }
 
-function lexicalSimilarity(queryTokens: string[], candidateTokens: string[]): number {
+function lexicalSimilarity(query: ParsedItem, candidate: ParsedItem, excerpt: string): number {
+  const queryTokens = query.tokens.length ? query.tokens : query.normalizedText.split(/\s+/).filter(Boolean);
+  const candidateTokens = candidate.tokens.length ? candidate.tokens : candidate.normalizedText.split(/\s+/).filter(Boolean);
+
   if (!queryTokens.length || !candidateTokens.length) return 0;
+
   const candidateSet = new Set(candidateTokens);
+  const lowerExcerpt = excerpt.toLowerCase();
   let exact = 0;
+
   for (const token of queryTokens) {
     if (candidateSet.has(token)) exact += 1;
-    else if ([...candidateSet].some((candidate) => trigramSimilarity(token, candidate) >= 0.55)) exact += 0.65;
+    else if (lowerExcerpt.includes(token)) exact += 0.8;
+    else if ([...candidateSet].some((candidateToken) => trigramSimilarity(token, candidateToken) >= 0.55)) exact += 0.65;
   }
-  return exact / queryTokens.length;
+
+  if (query.productMain && candidate.productMain === query.productMain) exact += 0.5;
+  if (query.brand && candidate.brand === query.brand) exact += 0.25;
+  if (query.color && candidate.color === query.color) exact += 0.15;
+
+  return Math.min(1, exact / Math.max(queryTokens.length, 1));
+}
+
+function containsImportantTerm(query: ParsedItem, excerpt: string): boolean {
+  const lowerExcerpt = excerpt.toLowerCase();
+  if (query.productMain && lowerExcerpt.includes(query.productMain)) return true;
+  if (query.brand && lowerExcerpt.includes(query.brand)) return true;
+  if (query.model && lowerExcerpt.includes(query.model)) return true;
+
+  const meaningfulTerms = query.normalizedText.split(/\s+/).filter((term) => term.length >= 5);
+  return meaningfulTerms.some((term) => lowerExcerpt.includes(term));
 }
 
 function trigramSimilarity(a: string, b: string): number {
