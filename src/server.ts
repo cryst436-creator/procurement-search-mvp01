@@ -7,7 +7,7 @@ import { FileCache } from './infrastructure/fileCache.js';
 import { MemoryStore } from './infrastructure/memoryStore.js';
 import { PNCPProvider } from './providers/pncpProvider.js';
 
-const SourceSchema = z.enum(['PNCP', 'COMPRAS_GOV', 'SANTA_CATARINA', 'MOCK']);
+const SourceSchema = z.enum(['PNCP', 'COMPRAS_GOV', 'SANTA_CATARINA', 'PARANA', 'RIO_GRANDE_DO_SUL', 'MOCK']);
 
 const SearchRequestSchema = z.object({
   query: z.string().min(1),
@@ -71,7 +71,8 @@ app.get('/status', async () => ({
     pdfReader: 'inline text, metadata fallback and lightweight document fetch',
     frontend: 'basic browser page',
     pncpItems: 'experimental enrichment inside PNCPProvider',
-    debug: ['/debug/pncp', '/debug/pncp/raw', '/debug/cache', '/debug/provider-status']
+    debug: ['/debug/pncp', '/debug/pncp/raw', '/debug/cache', '/debug/provider-status'],
+    preparedSources: ['PNCP', 'COMPRAS_GOV', 'SANTA_CATARINA', 'PARANA', 'RIO_GRANDE_DO_SUL']
   }
 }));
 
@@ -95,7 +96,9 @@ app.get('/debug/provider-status', async () => ({
     PNCP: { enabled: process.env.ENABLE_PNCP_PROVIDER === 'true', modalidade: process.env.PNCP_MODALIDADE ?? '6', modalidades: process.env.PNCP_MODALIDADES ?? null, itemsMaxRequests: Number(process.env.PNCP_ITEMS_MAX_REQUESTS ?? 2) },
     MOCK: { enabled: process.env.ENABLE_MOCK_PROVIDER !== 'false' },
     COMPRAS_GOV: { enabled: process.env.ENABLE_COMPRAS_GOV_PROVIDER === 'true' },
-    SANTA_CATARINA: { enabled: process.env.ENABLE_SC_PROVIDER === 'true' }
+    SANTA_CATARINA: { enabled: process.env.ENABLE_SANTA_CATARINA_PROVIDER === 'true' },
+    PARANA: { enabled: process.env.ENABLE_PARANA_PROVIDER === 'true' },
+    RIO_GRANDE_DO_SUL: { enabled: process.env.ENABLE_RIO_GRANDE_DO_SUL_PROVIDER === 'true' }
   }
 }));
 
@@ -148,10 +151,7 @@ async function debugPncp(request: any, reply: any, forceRaw: boolean) {
 
   try {
     const result = await pncpProvider.search(providerQuery);
-    const documents = result.documents.map((ref) => ({
-      ...toSearchRawDocument(ref),
-      rawMetadata: forceRaw || parsed.data.raw ? ref.rawMetadata : undefined
-    }));
+    const documents = result.documents.map((ref) => ({ ...toSearchRawDocument(ref), rawMetadata: forceRaw || parsed.data.raw ? ref.rawMetadata : undefined }));
     return reply.send({ mode: forceRaw ? 'pncp-raw-debug' : 'pncp-debug', request: providerQuery, totalRawDocuments: documents.length, documents, warnings: result.warnings });
   } catch (error) {
     request.log.error(error);
@@ -175,13 +175,7 @@ async function cachedSearch(searchRequest: SearchRequest) {
 }
 
 function registerHistory(query: string, totalResults: number, warningsCount: number): void {
-  memoryStore.add({
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    createdAt: new Date().toISOString(),
-    query,
-    totalResults,
-    warningsCount
-  });
+  memoryStore.add({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, createdAt: new Date().toISOString(), query, totalResults, warningsCount });
 }
 
 function simpleHtml(): string {
