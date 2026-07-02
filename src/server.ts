@@ -7,6 +7,7 @@ import { FileCache } from './infrastructure/fileCache.js';
 import { MemoryStore } from './infrastructure/memoryStore.js';
 import { PNCPProvider } from './providers/pncpProvider.js';
 
+const CACHE_NAMESPACE = 'search-v2-item-filter';
 const SourceSchema = z.enum(['PNCP', 'COMPRAS_GOV', 'SANTA_CATARINA', 'PARANA', 'RIO_GRANDE_DO_SUL', 'MOCK']);
 
 const SearchRequestSchema = z.object({
@@ -66,7 +67,7 @@ app.get('/status', async () => ({
   modules: {
     pncp: process.env.ENABLE_PNCP_PROVIDER === 'true' ? 'enabled' : 'disabled',
     mock: process.env.ENABLE_MOCK_PROVIDER === 'false' ? 'disabled' : 'enabled',
-    cache: 'runtime file cache',
+    cache: `runtime file cache namespace ${CACHE_NAMESPACE}`,
     database: 'runtime memory history',
     pdfReader: 'inline text, metadata fallback and lightweight document fetch',
     frontend: 'basic browser page',
@@ -84,6 +85,7 @@ app.get('/debug/cache', async () => ({
   ok: true,
   cache: {
     type: 'runtime-file-cache',
+    namespace: CACHE_NAMESPACE,
     ttlMs: Number(process.env.CACHE_TTL_MS ?? 1000 * 60 * 30),
     directory: process.env.RUNTIME_CACHE_DIR ?? './runtime-cache',
     note: 'Cache is temporary and may reset on deploy or restart.'
@@ -161,15 +163,15 @@ async function debugPncp(request: any, reply: any, forceRaw: boolean) {
 
 async function cachedSearch(searchRequest: SearchRequest) {
   const key = JSON.stringify(searchRequest);
-  const cached = await cache.get<any>('search', key);
+  const cached = await cache.get<any>(CACHE_NAMESPACE, key);
   if (cached) {
-    cached.warnings = [...(cached.warnings ?? []), { source: 'SYSTEM', message: 'Result served from runtime cache.' }];
+    cached.warnings = [...(cached.warnings ?? []), { source: 'SYSTEM', message: `Result served from runtime cache namespace ${CACHE_NAMESPACE}.` }];
     registerHistory(searchRequest.query, cached.totalResults ?? 0, cached.warnings.length);
     return cached;
   }
 
   const response = await searchEngine.search(searchRequest);
-  await cache.set('search', key, response);
+  await cache.set(CACHE_NAMESPACE, key, response);
   registerHistory(searchRequest.query, response.totalResults, response.warnings.length);
   return response;
 }
