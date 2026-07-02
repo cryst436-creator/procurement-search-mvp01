@@ -2,7 +2,7 @@ import type { ProcurementProvider } from '../domain/contracts.js';
 import type { ProviderQuery, ProviderSearchResult } from '../domain/types.js';
 
 export class ParanaProvider implements ProcurementProvider {
-  readonly source = 'SANTA_CATARINA' as const;
+  readonly source = 'PARANA' as const;
 
   constructor(private readonly enabled = process.env.ENABLE_PARANA_PROVIDER === 'true') {}
 
