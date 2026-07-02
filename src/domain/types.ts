@@ -155,12 +155,30 @@ export type SearchWarning = {
   message: string;
 };
 
+export type SearchRawDocument = {
+  id: string;
+  fonte: SourceId;
+  tipoDocumento?: ProcurementDocType;
+  orgao?: string;
+  municipio?: string;
+  estado?: string;
+  numeroProcesso?: string;
+  numeroEdital?: string;
+  numeroControlePNCP?: string;
+  modalidade?: string;
+  data?: string;
+  descricao?: string;
+  linkOficial: string;
+  linkDocumento?: string;
+};
+
 export type SearchResponse = {
   query: string;
   parsedQuery: ParsedItem;
   groups: ResultGroup[];
   totalResults: number;
   warnings: SearchWarning[];
+  rawDocuments?: SearchRawDocument[];
 };
 
 export type ProviderSearchResult = {
