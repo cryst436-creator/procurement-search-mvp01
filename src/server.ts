@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { z } from 'zod';
+import type { SearchRequest } from './domain/types.js';
 import { createDefaultSearchEngine } from './modules/searchEngine.js';
 import { FileCache } from './infrastructure/fileCache.js';
 import { MemoryStore } from './infrastructure/memoryStore.js';
@@ -61,8 +62,8 @@ app.get('/status', async () => ({
   }
 }));
 
-app.get('/', async (_request, reply) => reply.type('text/html').send(simpleHtml()));
-app.get('/app', async (_request, reply) => reply.type('text/html').send(simpleHtml()));
+app.get('/', async (_request: any, reply: any) => reply.type('text/html').send(simpleHtml()));
+app.get('/app', async (_request: any, reply: any) => reply.type('text/html').send(simpleHtml()));
 app.get('/history', async () => ({ ok: true, history: memoryStore.list() }));
 
 app.get('/search-test', async (request: any, reply: any) => {
@@ -70,7 +71,7 @@ app.get('/search-test', async (request: any, reply: any) => {
   if (!parsed.success) return reply.status(400).send({ error: 'Invalid search test query', details: parsed.error.flatten() });
 
   const { source, ...rest } = parsed.data;
-  const searchRequest = { ...rest, sources: source ? [source] : undefined };
+  const searchRequest: SearchRequest = { ...rest, sources: source ? [source] : undefined };
 
   try {
     const response = await cachedSearch(searchRequest);
@@ -86,7 +87,7 @@ app.post('/search', async (request: any, reply: any) => {
   if (!parsed.success) return reply.status(400).send({ error: 'Invalid search request', details: parsed.error.flatten() });
 
   try {
-    const response = await cachedSearch(parsed.data);
+    const response = await cachedSearch(parsed.data as SearchRequest);
     return reply.send(response);
   } catch (error) {
     request.log.error(error);
@@ -94,7 +95,7 @@ app.post('/search', async (request: any, reply: any) => {
   }
 });
 
-async function cachedSearch(searchRequest: z.infer<typeof SearchRequestSchema>) {
+async function cachedSearch(searchRequest: SearchRequest) {
   const key = JSON.stringify(searchRequest);
   const cached = await cache.get<any>('search', key);
   if (cached) {
