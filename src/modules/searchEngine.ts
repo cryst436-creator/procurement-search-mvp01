@@ -9,7 +9,7 @@ import type {
   SimilarityScorer,
   TextNormalizer
 } from '../domain/contracts.js';
-import type { ExtractedDocument, ProviderQuery, RawDocumentRef, SearchRequest, SearchResponse, SearchWarning } from '../domain/types.js';
+import type { ExtractedDocument, ProviderQuery, RawDocumentRef, SearchRawDocument, SearchRequest, SearchResponse, SearchWarning } from '../domain/types.js';
 import { Normalizer } from './normalizer.js';
 import { Tokenizer } from './tokenizer.js';
 import { Matcher } from './matcher.js';
@@ -62,7 +62,7 @@ export class SearchEngine implements SearchUseCase {
     }
 
     const providerResults = await Promise.allSettled(enabledProviders.map((provider) => provider.search(providerQuery)));
-    const rawRefs = [];
+    const rawRefs: RawDocumentRef[] = [];
     for (const result of providerResults) {
       if (result.status === 'fulfilled') {
         rawRefs.push(...result.value.documents);
@@ -80,13 +80,19 @@ export class SearchEngine implements SearchUseCase {
       .filter((result) => result.similaridade >= 25);
     const groups = this.clusterer.cluster(scored);
     const rankedGroups = this.ranker.rank(groups);
+    const totalResults = rankedGroups.reduce((sum, group) => sum + group.resultCount, 0);
+
+    if (dedupedRefs.length > 0 && totalResults === 0) {
+      warnings.push({ source: 'SYSTEM', message: 'Providers returned raw documents, but no semantic match passed the similarity threshold.' });
+    }
 
     return {
       query,
       parsedQuery,
       groups: rankedGroups,
-      totalResults: rankedGroups.reduce((sum, group) => sum + group.resultCount, 0),
-      warnings
+      totalResults,
+      warnings,
+      rawDocuments: dedupedRefs.map(toSearchRawDocument)
     };
   }
 
@@ -117,6 +123,37 @@ function dedupeByOfficialUrl<T extends { officialUrl: string; id: string }>(item
     if (!map.has(key)) map.set(key, item);
   }
   return [...map.values()];
+}
+
+export function toSearchRawDocument(ref: RawDocumentRef): SearchRawDocument {
+  return {
+    id: ref.id,
+    fonte: ref.source,
+    tipoDocumento: ref.documentType,
+    orgao: ref.organization,
+    municipio: ref.municipio,
+    estado: ref.uf,
+    numeroProcesso: ref.processNumber,
+    numeroEdital: ref.editalNumber,
+    numeroControlePNCP: extractNumeroControle(ref),
+    modalidade: ref.modalidade,
+    data: ref.publicationDate,
+    descricao: summarize(ref.inlineText),
+    linkOficial: ref.officialUrl,
+    linkDocumento: ref.documentUrl
+  };
+}
+
+function extractNumeroControle(ref: RawDocumentRef): string | undefined {
+  const raw = ref.rawMetadata as any;
+  if (typeof raw?.numeroControlePNCP === 'string') return raw.numeroControlePNCP;
+  if (typeof raw?.publication?.numeroControlePNCP === 'string') return raw.publication.numeroControlePNCP;
+  return undefined;
+}
+
+function summarize(value?: string): string | undefined {
+  if (!value) return undefined;
+  return value.length > 650 ? `${value.slice(0, 647)}...` : value;
 }
 
 export function createDefaultSearchEngine(): SearchEngine {
