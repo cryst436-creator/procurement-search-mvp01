@@ -1,5 +1,26 @@
 import type { ProcurementProvider } from '../domain/contracts.js';
-import type { ProviderQuery, ProviderSearchResult, RawDocumentRef } from '../domain/types.js';
+import type { ProviderQuery, ProviderSearchResult, RawDocumentRef, SearchWarning } from '../domain/types.js';
+
+type DateRange = {
+  dateFrom: string;
+  dateTo: string;
+  adjusted: boolean;
+};
+
+type PncpAttempt = {
+  label: string;
+  url: string;
+  modalidade: string;
+};
+
+const DEFAULT_MODALIDADES = [
+  '6', // Pregão - Eletrônico
+  '8', // Dispensa de Licitação
+  '9', // Inexigibilidade
+  '4', // Concorrência - Eletrônica
+  '7', // Pregão - Presencial
+  '5'  // Concorrência - Presencial
+];
 
 export class PNCPProvider implements ProcurementProvider {
   readonly source = 'PNCP' as const;
@@ -16,100 +37,117 @@ export class PNCPProvider implements ProcurementProvider {
   async search(query: ProviderQuery): Promise<ProviderSearchResult> {
     if (!this.enabled) return { documents: [], warnings: [] };
 
-    const warnings: ProviderSearchResult['warnings'] = [];
+    const warnings: SearchWarning[] = [];
+    const dateRange = buildPncpDateRange(query.dateFrom, query.dateTo);
+    const pageSize = Math.min(query.pageSize ?? 10, Number(process.env.PNCP_PAGE_SIZE ?? 10), 50);
+    const attempts = this.buildAttempts(query, dateRange, pageSize);
+    const documents: RawDocumentRef[] = [];
+    const seen = new Set<string>();
 
-    const primaryParams = this.buildParams(query);
-    const attempts: Array<{ label: string; params: URLSearchParams }> = [
-      { label: 'primary', params: primaryParams }
-    ];
-
-    // Some PNCP queries are more stable without UF when the endpoint is under load or the filter is too restrictive.
-    // Keep this fallback isolated inside the provider so the rest of the search engine stays unchanged.
-    if (query.uf) {
-      const withoutUf = new URLSearchParams(primaryParams);
-      withoutUf.delete('uf');
-      attempts.push({ label: 'without-uf', params: withoutUf });
+    if (dateRange.adjusted) {
+      warnings.push({
+        source: this.source,
+        message: `PNCPProvider adjusted the requested date range to ${dateRange.dateFrom}-${dateRange.dateTo} to avoid invalid/future dates.`
+      });
     }
 
     for (const attempt of attempts) {
-      const url = `${this.baseUrl}/v1/contratacoes/publicacao?${attempt.params.toString()}`;
-
       try {
-        const response = await fetchWithTimeout(url, Number(process.env.PNCP_TIMEOUT_MS ?? 20000));
+        const response = await fetchWithTimeout(attempt.url, Number(process.env.PNCP_TIMEOUT_MS ?? 20000));
 
-        if (response.status === 204) {
-          return {
-            documents: [],
-            warnings: [{ source: this.source, message: `PNCPProvider returned HTTP 204. No records for this filter. URL: ${url}` }]
-          };
-        }
+        if (response.status === 204) continue;
 
         if (!response.ok) {
+          const body = await readSmallBody(response);
           warnings.push({
             source: this.source,
-            message: `PNCPProvider attempt '${attempt.label}' returned HTTP ${response.status}. URL: ${url}`
+            message: `PNCPProvider attempt '${attempt.label}' returned HTTP ${response.status}${body ? `: ${body}` : ''}. URL: ${attempt.url}`
           });
-
-          if ([500, 502, 503, 504].includes(response.status)) continue;
-          return { documents: [], warnings };
+          continue;
         }
 
         const payload = await response.json() as any;
-        const rows: any[] = Array.isArray(payload?.data)
-          ? payload.data
-          : Array.isArray(payload?.content)
-            ? payload.content
-            : Array.isArray(payload)
-              ? payload
-              : [];
+        const rows = extractRows(payload);
 
-        const documents: RawDocumentRef[] = rows.map((row, index) => ({
-          id: `pncp-${row.numeroControlePNCP ?? row.numeroCompra ?? index}`,
-          source: this.source,
-          officialUrl: row.linkSistemaOrigem ?? row.linkProcessoEletronico ?? row.url ?? this.baseUrl,
-          documentUrl: row.linkDocumento ?? row.urlDocumento,
-          documentType: mapPncpDocType(row.tipoDocumentoNome ?? row.modalidadeNome),
-          organization: row.orgaoEntidade?.razaoSocial ?? row.orgaoNome,
-          municipio: row.unidadeOrgao?.municipioNome ?? row.municipioNome,
-          uf: row.unidadeOrgao?.ufSigla ?? row.uf,
-          processNumber: row.numeroProcesso,
-          editalNumber: row.numeroCompra,
-          modalidade: row.modalidadeNome,
-          publicationDate: row.dataPublicacaoPncp ?? row.dataPublicacao,
-          rawMetadata: row
-        }));
+        for (const row of rows) {
+          const ref = mapPncpRow(row, this.baseUrl);
+          const key = ref.id || ref.officialUrl;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          documents.push(ref);
+        }
 
-        return { documents, warnings };
+        if (documents.length >= (query.pageSize ?? 10)) break;
       } catch (error) {
         warnings.push({
           source: this.source,
-          message: `PNCPProvider attempt '${attempt.label}' unavailable: ${error instanceof Error ? error.message : 'unknown error'}. URL: ${url}`
+          message: `PNCPProvider attempt '${attempt.label}' unavailable: ${error instanceof Error ? error.message : 'unknown error'}. URL: ${attempt.url}`
         });
       }
+    }
+
+    const limitedDocuments = documents.slice(0, query.pageSize ?? 10);
+
+    if (limitedDocuments.length > 0) {
+      warnings.push({
+        source: this.source,
+        message: `PNCPProvider collected ${limitedDocuments.length} publication record(s) from ${dateRange.dateFrom} to ${dateRange.dateTo}. Local similarity filtering will decide final matches.`
+      });
+      return { documents: limitedDocuments, warnings };
+    }
+
+    if (!warnings.length) {
+      warnings.push({
+        source: this.source,
+        message: `PNCPProvider found no publication records from ${dateRange.dateFrom} to ${dateRange.dateTo}. Try a wider or older date range.`
+      });
     }
 
     return { documents: [], warnings };
   }
 
-  private buildParams(query: ProviderQuery): URLSearchParams {
+  private buildAttempts(query: ProviderQuery, dateRange: DateRange, pageSize: number): PncpAttempt[] {
+    const modalidades = resolveModalidades();
+    const attempts: PncpAttempt[] = [];
+
+    for (const modalidade of modalidades) {
+      attempts.push(this.buildAttempt(`modalidade-${modalidade}`, dateRange, pageSize, modalidade, query.uf));
+
+      if (query.uf) {
+        attempts.push(this.buildAttempt(`modalidade-${modalidade}-without-uf`, dateRange, pageSize, modalidade));
+      }
+    }
+
+    return attempts;
+  }
+
+  private buildAttempt(label: string, dateRange: DateRange, pageSize: number, modalidade: string, uf?: string): PncpAttempt {
     const params = new URLSearchParams();
 
-    const dateFrom = normalizePncpDate(query.dateFrom);
-    const dateTo = normalizePncpDate(query.dateTo);
-
-    if (dateFrom) params.set('dataInicial', dateFrom);
-    if (dateTo) params.set('dataFinal', dateTo);
-    if (query.uf) params.set('uf', query.uf.toUpperCase());
-
-    // MVP 01: usa Pregão Eletrônico como modalidade inicial controlada.
-    // Pode ser alterado no Render pela variável PNCP_MODALIDADE.
-    params.set('codigoModalidadeContratacao', process.env.PNCP_MODALIDADE ?? '8');
-
+    params.set('dataInicial', dateRange.dateFrom);
+    params.set('dataFinal', dateRange.dateTo);
+    params.set('codigoModalidadeContratacao', modalidade);
     params.set('pagina', '1');
-    params.set('tamanhoPagina', String(Math.min(query.pageSize ?? 5, 5)));
+    params.set('tamanhoPagina', String(pageSize));
 
-    return params;
+    if (uf) params.set('uf', uf.toUpperCase());
+
+    return {
+      label,
+      modalidade,
+      url: `${this.baseUrl}/v1/contratacoes/publicacao?${params.toString()}`
+    };
   }
+}
+
+function resolveModalidades(): string[] {
+  const explicitList = process.env.PNCP_MODALIDADES
+    ?.split(',')
+    .map((value) => value.trim())
+    .filter(Boolean) ?? [];
+
+  const preferred = process.env.PNCP_MODALIDADE?.trim();
+  return unique([preferred, ...explicitList, ...DEFAULT_MODALIDADES].filter((value): value is string => Boolean(value)));
 }
 
 async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
@@ -126,10 +164,132 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Respons
   }
 }
 
+async function readSmallBody(response: Response): Promise<string> {
+  try {
+    const text = await response.text();
+    return text.replace(/\s+/g, ' ').trim().slice(0, 300);
+  } catch {
+    return '';
+  }
+}
+
+function extractRows(payload: any): any[] {
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.content)) return payload.content;
+  if (Array.isArray(payload?.items)) return payload.items;
+  if (Array.isArray(payload)) return payload;
+  return [];
+}
+
+function buildPncpDateRange(dateFrom?: string, dateTo?: string): DateRange {
+  const today = startOfDay(new Date());
+  const requestedTo = parsePncpDate(dateTo) ?? today;
+  const requestedFrom = parsePncpDate(dateFrom) ?? addDays(requestedTo, -30);
+
+  let finalTo = requestedTo > today ? today : requestedTo;
+  let finalFrom = requestedFrom;
+
+  if (finalFrom > finalTo) {
+    finalFrom = addDays(finalTo, -30);
+  }
+
+  const adjusted = toPncpDate(finalFrom) !== normalizePncpDate(dateFrom) || toPncpDate(finalTo) !== normalizePncpDate(dateTo);
+
+  return {
+    dateFrom: toPncpDate(finalFrom),
+    dateTo: toPncpDate(finalTo),
+    adjusted
+  };
+}
+
+function parsePncpDate(value?: string): Date | undefined {
+  const normalized = normalizePncpDate(value);
+  if (!normalized) return undefined;
+
+  const year = Number(normalized.slice(0, 4));
+  const month = Number(normalized.slice(4, 6));
+  const day = Number(normalized.slice(6, 8));
+
+  if (!year || !month || !day) return undefined;
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
 function normalizePncpDate(value?: string): string | undefined {
   if (!value) return undefined;
   const digits = value.replace(/\D/g, '');
-  return digits.length === 8 ? digits : value;
+  return digits.length === 8 ? digits : undefined;
+}
+
+function toPncpDate(value: Date): string {
+  const year = value.getUTCFullYear();
+  const month = String(value.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(value.getUTCDate()).padStart(2, '0');
+  return `${year}${month}${day}`;
+}
+
+function startOfDay(value: Date): Date {
+  return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
+}
+
+function addDays(value: Date, days: number): Date {
+  const result = new Date(value);
+  result.setUTCDate(result.getUTCDate() + days);
+  return result;
+}
+
+function mapPncpRow(row: any, baseUrl: string): RawDocumentRef {
+  const inlineText = buildInlineText(row);
+  const numeroControle = String(row.numeroControlePNCP ?? '').trim();
+
+  return {
+    id: `pncp-${numeroControle || row.numeroCompra || row.sequencialCompra || cryptoRandomFallback()}`,
+    source: 'PNCP',
+    officialUrl: buildOfficialUrl(row, baseUrl),
+    documentUrl: row.linkDocumento ?? row.urlDocumento,
+    documentType: mapPncpDocType(row.tipoInstrumentoConvocatorioNome ?? row.tipoDocumentoNome ?? row.modalidadeNome),
+    organization: row.orgaoEntidade?.razaoSocial ?? row.orgaoEntidade?.razaosocial ?? row.orgaoNome,
+    municipio: row.unidadeOrgao?.municipioNome ?? row.municipioNome,
+    uf: row.unidadeOrgao?.ufSigla ?? row.uf,
+    processNumber: row.processo ?? row.numeroProcesso,
+    editalNumber: row.numeroCompra,
+    modalidade: row.modalidadeNome,
+    publicationDate: row.dataPublicacaoPncp ?? row.dataPublicacao,
+    rawMetadata: row,
+    inlineText
+  };
+}
+
+function buildInlineText(row: any): string {
+  return [
+    row.objetoCompra,
+    row.informacaoComplementar,
+    row.tipoInstrumentoConvocatorioNome,
+    row.modalidadeNome,
+    row.modoDisputaNome,
+    row.situacaoCompraNome,
+    row.orgaoEntidade?.razaoSocial ?? row.orgaoEntidade?.razaosocial,
+    row.unidadeOrgao?.nomeUnidade,
+    row.unidadeOrgao?.municipioNome,
+    row.unidadeOrgao?.ufSigla,
+    row.numeroCompra ? `Número da compra: ${row.numeroCompra}` : undefined,
+    row.processo ? `Processo: ${row.processo}` : undefined,
+    row.numeroControlePNCP ? `Número de controle PNCP: ${row.numeroControlePNCP}` : undefined
+  ]
+    .filter((value) => typeof value === 'string' && value.trim().length > 0)
+    .join('. ');
+}
+
+function buildOfficialUrl(row: any, baseUrl: string): string {
+  const numeroControle = String(row.numeroControlePNCP ?? '').trim();
+  const match = numeroControle.match(/^(\d{14})-1-(\d{1,6})\/(\d{4})$/);
+
+  if (match) {
+    const [, cnpj, sequencial, ano] = match;
+    return `https://pncp.gov.br/app/editais/${cnpj}/${ano}/${Number(sequencial)}`;
+  }
+
+  return row.linkSistemaOrigem ?? row.linkProcessoEletronico ?? row.url ?? baseUrl;
 }
 
 function mapPncpDocType(value?: string): RawDocumentRef['documentType'] {
@@ -138,6 +298,15 @@ function mapPncpDocType(value?: string): RawDocumentRef['documentType'] {
   if (normalized.includes('ata')) return 'ATA_REGISTRO_PRECOS';
   if (normalized.includes('contrato')) return 'CONTRATO_ADMINISTRATIVO';
   if (normalized.includes('homolog')) return 'HOMOLOGACAO';
+  if (normalized.includes('aviso')) return 'AVISO_LICITACAO';
   if (normalized.includes('dispensa') || normalized.includes('inexig')) return 'CONTRATACAO_DIRETA';
   return 'OUTRO';
+}
+
+function unique<T>(values: T[]): T[] {
+  return [...new Set(values)];
+}
+
+function cryptoRandomFallback(): string {
+  return Math.random().toString(36).slice(2, 10);
 }
