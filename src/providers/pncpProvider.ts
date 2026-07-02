@@ -14,12 +14,7 @@ type PncpAttempt = {
 };
 
 const DEFAULT_MODALIDADES = [
-  '6', // Pregão - Eletrônico
-  '8', // Dispensa de Licitação
-  '9', // Inexigibilidade
-  '4', // Concorrência - Eletrônica
-  '7', // Pregão - Presencial
-  '5'  // Concorrência - Presencial
+  '6' // Pregão - Eletrônico. MVP 01 keeps the default narrow to avoid PNCP rate limits.
 ];
 
 export class PNCPProvider implements ProcurementProvider {
@@ -39,7 +34,8 @@ export class PNCPProvider implements ProcurementProvider {
 
     const warnings: SearchWarning[] = [];
     const dateRange = buildPncpDateRange(query.dateFrom, query.dateTo);
-    const pageSize = Math.min(query.pageSize ?? 10, Number(process.env.PNCP_PAGE_SIZE ?? 10), 50);
+    const requestedLimit = query.pageSize ?? 10;
+    const pageSize = resolvePncpPageSize(requestedLimit);
     const attempts = this.buildAttempts(query, dateRange, pageSize);
     const documents: RawDocumentRef[] = [];
     const seen = new Set<string>();
@@ -51,11 +47,27 @@ export class PNCPProvider implements ProcurementProvider {
       });
     }
 
+    if (pageSize !== requestedLimit) {
+      warnings.push({
+        source: this.source,
+        message: `PNCPProvider adjusted tamanhoPagina from ${requestedLimit} to ${pageSize}. PNCP requires tamanhoPagina >= 10.`
+      });
+    }
+
     for (const attempt of attempts) {
       try {
         const response = await fetchWithTimeout(attempt.url, Number(process.env.PNCP_TIMEOUT_MS ?? 20000));
 
         if (response.status === 204) continue;
+
+        if (response.status === 429) {
+          const body = await readSmallBody(response);
+          warnings.push({
+            source: this.source,
+            message: `PNCPProvider attempt '${attempt.label}' hit PNCP rate limit HTTP 429${body ? `: ${body}` : ''}. Wait a few minutes before retrying. URL: ${attempt.url}`
+          });
+          break;
+        }
 
         if (!response.ok) {
           const body = await readSmallBody(response);
@@ -77,7 +89,8 @@ export class PNCPProvider implements ProcurementProvider {
           documents.push(ref);
         }
 
-        if (documents.length >= (query.pageSize ?? 10)) break;
+        // Do not fan out into more modalidades if we already got records. This avoids useless PNCP traffic.
+        if (documents.length > 0) break;
       } catch (error) {
         warnings.push({
           source: this.source,
@@ -86,7 +99,7 @@ export class PNCPProvider implements ProcurementProvider {
       }
     }
 
-    const limitedDocuments = documents.slice(0, query.pageSize ?? 10);
+    const limitedDocuments = documents.slice(0, Math.min(requestedLimit, documents.length || requestedLimit));
 
     if (limitedDocuments.length > 0) {
       warnings.push({
@@ -112,10 +125,6 @@ export class PNCPProvider implements ProcurementProvider {
 
     for (const modalidade of modalidades) {
       attempts.push(this.buildAttempt(`modalidade-${modalidade}`, dateRange, pageSize, modalidade, query.uf));
-
-      if (query.uf) {
-        attempts.push(this.buildAttempt(`modalidade-${modalidade}-without-uf`, dateRange, pageSize, modalidade));
-      }
     }
 
     return attempts;
@@ -148,6 +157,12 @@ function resolveModalidades(): string[] {
 
   const preferred = process.env.PNCP_MODALIDADE?.trim();
   return unique([preferred, ...explicitList, ...DEFAULT_MODALIDADES].filter((value): value is string => Boolean(value)));
+}
+
+function resolvePncpPageSize(requestedLimit: number): number {
+  const configuredMax = Math.max(Number(process.env.PNCP_PAGE_SIZE ?? 10), 10);
+  const requested = Math.max(requestedLimit, 10);
+  return Math.min(requested, configuredMax, 50);
 }
 
 async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
