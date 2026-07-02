@@ -29,7 +29,21 @@ await app.register(cors, { origin: true });
 const searchEngine = createDefaultSearchEngine();
 
 app.get('/health', async () => ({ ok: true, service: 'procurement-search-mvp01' }));
-
+app.get('/', async () => ({
+  ok: true,
+  service: 'procurement-search-mvp01',
+  message: 'API online. Use POST /search para pesquisar documentos.',
+  endpoints: {
+    health: 'GET /health',
+    search: 'POST /search'
+  },
+  exampleSearchBody: {
+    query: 'Caneta Azul Bic Cristal',
+    sources: ['MOCK'],
+    uf: 'SC',
+    limit: 10
+  }
+}));
 app.post('/search', async (request: any, reply: any) => {
   const parsed = SearchRequestSchema.safeParse(request.body);
   if (!parsed.success) {
