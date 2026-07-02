@@ -1,4 +1,4 @@
-export type SourceId = 'PNCP' | 'COMPRAS_GOV' | 'SANTA_CATARINA' | 'MOCK';
+export type SourceId = 'PNCP' | 'COMPRAS_GOV' | 'SANTA_CATARINA' | 'PARANA' | 'RIO_GRANDE_DO_SUL' | 'MOCK';
 
 export type ProcurementDocType =
   | 'EDITAL'
@@ -60,32 +60,12 @@ export type RawDocumentRef = {
   modalidade?: string;
   publicationDate?: string;
   rawMetadata?: unknown;
-  /** Used by mock/local fixtures. Real providers should normally use documentUrl. */
   inlineText?: string;
 };
 
-export type ExtractedTable = {
-  page?: number;
-  rows: string[][];
-  confidence: number;
-};
-
-export type DocumentSection = {
-  page?: number;
-  title?: string;
-  text: string;
-  charStart?: number;
-  charEnd?: number;
-};
-
-export type ExtractedDocument = {
-  ref: RawDocumentRef;
-  text: string;
-  tables: ExtractedTable[];
-  sections: DocumentSection[];
-  extractionConfidence: number;
-  warnings: string[];
-};
+export type ExtractedTable = { page?: number; rows: string[][]; confidence: number };
+export type DocumentSection = { page?: number; title?: string; text: string; charStart?: number; charEnd?: number };
+export type ExtractedDocument = { ref: RawDocumentRef; text: string; tables: ExtractedTable[]; sections: DocumentSection[]; extractionConfidence: number; warnings: string[] };
 
 export type ParsedItem = {
   productMain?: string;
@@ -105,21 +85,10 @@ export type MatchCandidate = {
   item: ParsedItem;
   excerpt: string;
   lexicalScore: number;
-  sourceSpan?: {
-    page?: number;
-    section?: string;
-    charStart?: number;
-    charEnd?: number;
-  };
+  sourceSpan?: { page?: number; section?: string; charStart?: number; charEnd?: number };
 };
 
-export type Explanation = {
-  criterion: ExplanationCriterion;
-  status: MatchStatus;
-  contribution: number;
-  message: string;
-  evidence?: string;
-};
+export type Explanation = { criterion: ExplanationCriterion; status: MatchStatus; contribution: number; message: string; evidence?: string };
 
 export type ScoredResult = {
   id: string;
@@ -141,19 +110,8 @@ export type ScoredResult = {
   explanations: Explanation[];
 };
 
-export type ResultGroup = {
-  id: string;
-  label: string;
-  representativeItem: ParsedItem;
-  groupSimilarity: number;
-  resultCount: number;
-  results: ScoredResult[];
-};
-
-export type SearchWarning = {
-  source?: SourceId | 'SYSTEM';
-  message: string;
-};
+export type ResultGroup = { id: string; label: string; representativeItem: ParsedItem; groupSimilarity: number; resultCount: number; results: ScoredResult[] };
+export type SearchWarning = { source?: SourceId | 'SYSTEM'; message: string };
 
 export type SearchRawDocument = {
   id: string;
@@ -172,16 +130,5 @@ export type SearchRawDocument = {
   linkDocumento?: string;
 };
 
-export type SearchResponse = {
-  query: string;
-  parsedQuery: ParsedItem;
-  groups: ResultGroup[];
-  totalResults: number;
-  warnings: SearchWarning[];
-  rawDocuments?: SearchRawDocument[];
-};
-
-export type ProviderSearchResult = {
-  documents: RawDocumentRef[];
-  warnings: SearchWarning[];
-};
+export type SearchResponse = { query: string; parsedQuery: ParsedItem; groups: ResultGroup[]; totalResults: number; warnings: SearchWarning[]; rawDocuments?: SearchRawDocument[] };
+export type ProviderSearchResult = { documents: RawDocumentRef[]; warnings: SearchWarning[] };
