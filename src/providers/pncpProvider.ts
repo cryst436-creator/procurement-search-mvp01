@@ -13,6 +13,15 @@ type PncpAttempt = {
   modalidade: string;
 };
 
+type PncpItem = {
+  numeroItem?: number;
+  descricao?: string;
+  unidadeMedida?: string;
+  quantidade?: number;
+  valorUnitarioEstimado?: number;
+  raw?: unknown;
+};
+
 const DEFAULT_MODALIDADES = [
   '6' // Pregão - Eletrônico. MVP 01 keeps the default narrow to avoid PNCP rate limits.
 ];
@@ -102,6 +111,7 @@ export class PNCPProvider implements ProcurementProvider {
     const limitedDocuments = documents.slice(0, Math.min(requestedLimit, documents.length || requestedLimit));
 
     if (limitedDocuments.length > 0) {
+      await this.enrichWithItems(limitedDocuments, warnings);
       warnings.push({
         source: this.source,
         message: `PNCPProvider collected ${limitedDocuments.length} publication record(s) from ${dateRange.dateFrom} to ${dateRange.dateTo}. Local similarity filtering will decide final matches.`
@@ -146,6 +156,38 @@ export class PNCPProvider implements ProcurementProvider {
       modalidade,
       url: `${this.baseUrl}/v1/contratacoes/publicacao?${params.toString()}`
     };
+  }
+
+  private async enrichWithItems(documents: RawDocumentRef[], warnings: SearchWarning[]): Promise<void> {
+    const maxItemRequests = Math.max(0, Number(process.env.PNCP_ITEMS_MAX_REQUESTS ?? 2));
+    if (maxItemRequests === 0) {
+      warnings.push({ source: this.source, message: 'PNCP item enrichment disabled by PNCP_ITEMS_MAX_REQUESTS=0.' });
+      return;
+    }
+
+    let requests = 0;
+    for (const document of documents) {
+      if (requests >= maxItemRequests) break;
+      const numeroControle = extractNumeroControle(document);
+      if (!numeroControle) continue;
+
+      requests += 1;
+      const result = await fetchPncpItems(this.baseUrl, numeroControle);
+      warnings.push(...result.warnings.map((message) => ({ source: this.source, message })));
+
+      if (!result.items.length) continue;
+
+      const itemText = buildItemsText(result.items);
+      document.inlineText = [document.inlineText, itemText].filter(Boolean).join('. ');
+      document.rawMetadata = {
+        publication: document.rawMetadata,
+        itemEnrichment: {
+          numeroControlePNCP: numeroControle,
+          itemCount: result.items.length,
+          items: result.items.slice(0, 30)
+        }
+      };
+    }
   }
 }
 
@@ -295,6 +337,19 @@ function buildInlineText(row: any): string {
     .join('. ');
 }
 
+function buildItemsText(items: PncpItem[]): string {
+  return items
+    .slice(0, 40)
+    .map((item) => [
+      item.numeroItem ? `Item ${item.numeroItem}` : 'Item',
+      item.descricao,
+      item.unidadeMedida ? `Unidade ${item.unidadeMedida}` : undefined,
+      typeof item.quantidade === 'number' ? `Quantidade ${item.quantidade}` : undefined,
+      typeof item.valorUnitarioEstimado === 'number' ? `Valor unitário estimado ${item.valorUnitarioEstimado}` : undefined
+    ].filter(Boolean).join(' - '))
+    .join('. ');
+}
+
 function buildOfficialUrl(row: any, baseUrl: string): string {
   const numeroControle = String(row.numeroControlePNCP ?? '').trim();
   const match = numeroControle.match(/^(\d{14})-1-(\d{1,6})\/(\d{4})$/);
@@ -316,6 +371,69 @@ function mapPncpDocType(value?: string): RawDocumentRef['documentType'] {
   if (normalized.includes('aviso')) return 'AVISO_LICITACAO';
   if (normalized.includes('dispensa') || normalized.includes('inexig')) return 'CONTRATACAO_DIRETA';
   return 'OUTRO';
+}
+
+function extractNumeroControle(document: RawDocumentRef): string | undefined {
+  const raw = document.rawMetadata as any;
+  const fromRaw = typeof raw?.numeroControlePNCP === 'string' ? raw.numeroControlePNCP : undefined;
+  if (fromRaw) return fromRaw;
+  const match = document.id.match(/pncp-(\d{14}-1-\d{1,6}\/\d{4})/);
+  return match?.[1];
+}
+
+async function fetchPncpItems(baseUrl: string, numeroControlePNCP: string): Promise<{ items: PncpItem[]; warnings: string[] }> {
+  const parsed = parseNumeroControle(numeroControlePNCP);
+  const warnings: string[] = [];
+  if (!parsed) return { items: [], warnings: [`Could not parse numeroControlePNCP for item enrichment: ${numeroControlePNCP}.`] };
+
+  const urls = [
+    `${baseUrl}/v1/orgaos/${parsed.cnpj}/compras/${parsed.ano}/${parsed.sequencial}/itens`,
+    `${baseUrl}/v1/orgaos/${parsed.cnpj}/compras/${parsed.ano}/${parsed.sequencialCompra}/itens`
+  ];
+
+  for (const url of urls) {
+    try {
+      const response = await fetchWithTimeout(url, Number(process.env.PNCP_TIMEOUT_MS ?? 20000));
+      if (response.status === 204 || response.status === 404) continue;
+      if (response.status === 429) {
+        warnings.push(`PNCP item enrichment hit HTTP 429. Wait before retrying. URL: ${url}`);
+        break;
+      }
+      if (!response.ok) {
+        const body = await readSmallBody(response);
+        warnings.push(`PNCP item enrichment returned HTTP ${response.status}${body ? `: ${body}` : ''}. URL: ${url}`);
+        continue;
+      }
+
+      const payload = await response.json() as any;
+      const rows = extractRows(payload);
+      const items = rows.map(mapPncpItem).filter((item) => item.descricao);
+      if (items.length) return { items, warnings };
+    } catch (error) {
+      warnings.push(`PNCP item enrichment unavailable: ${error instanceof Error ? error.message : 'unknown error'}. URL: ${url}`);
+    }
+  }
+
+  if (!warnings.length) warnings.push(`PNCP item enrichment found no items for ${numeroControlePNCP}.`);
+  return { items: [], warnings };
+}
+
+function parseNumeroControle(value: string): { cnpj: string; ano: string; sequencial: string; sequencialCompra: string } | undefined {
+  const match = value.trim().match(/^(\d{14})-1-(\d{1,6})\/(\d{4})$/);
+  if (!match) return undefined;
+  const [, cnpj, sequencialCompra, ano] = match;
+  return { cnpj, ano, sequencial: String(Number(sequencialCompra)), sequencialCompra };
+}
+
+function mapPncpItem(row: any): PncpItem {
+  return {
+    numeroItem: Number(row.numeroItem ?? row.item ?? 0) || undefined,
+    descricao: row.descricao ?? row.descricaoItem ?? row.descricaoDetalhada ?? row.nome ?? row.objetoCompra,
+    unidadeMedida: row.unidadeMedida ?? row.unidadeFornecimento,
+    quantidade: Number(row.quantidade ?? row.qtd) || undefined,
+    valorUnitarioEstimado: Number(row.valorUnitarioEstimado ?? row.valorUnitario ?? row.valor) || undefined,
+    raw: row
+  };
 }
 
 function unique<T>(values: T[]): T[] {
