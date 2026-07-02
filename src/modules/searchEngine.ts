@@ -16,6 +16,7 @@ import { Matcher } from './matcher.js';
 import { SimilarityEngine } from './similarityEngine.js';
 import { ClusterEngine } from './clusterEngine.js';
 import { RankingEngine } from './rankingEngine.js';
+import { filterItemCandidates } from './itemCandidateFilter.js';
 import { PDFReader } from '../pdf/pdfReader.js';
 import { MockProvider } from '../providers/mockProvider.js';
 import { PNCPProvider } from '../providers/pncpProvider.js';
@@ -74,16 +75,17 @@ export class SearchEngine implements SearchUseCase {
 
     const dedupedRefs = dedupeByOfficialUrl(rawRefs).slice(0, request.limit ?? 50);
     const extractedDocuments = await this.extractDocuments(dedupedRefs, warnings);
-    const candidates = this.matcher.match(parsedQuery, extractedDocuments);
+    const allCandidates = this.matcher.match(parsedQuery, extractedDocuments);
+    const itemCandidates = filterItemCandidates(allCandidates, warnings);
     const scored = this.similarityScorer
-      .score(parsedQuery, candidates)
+      .score(parsedQuery, itemCandidates)
       .filter((result) => result.similaridade >= 25);
     const groups = this.clusterer.cluster(scored);
     const rankedGroups = this.ranker.rank(groups);
     const totalResults = rankedGroups.reduce((sum, group) => sum + group.resultCount, 0);
 
     if (dedupedRefs.length > 0 && totalResults === 0) {
-      warnings.push({ source: 'SYSTEM', message: 'Providers returned raw documents, but no semantic match passed the similarity threshold.' });
+      warnings.push({ source: 'SYSTEM', message: 'Providers returned raw documents, but no item candidate passed the filters.' });
     }
 
     return {
