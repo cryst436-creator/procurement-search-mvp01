@@ -1,0 +1,102 @@
+import type { RawDocumentRef } from '../domain/types.js';
+
+export const mockDocuments: RawDocumentRef[] = [
+  {
+    id: 'mock-001',
+    source: 'MOCK',
+    officialUrl: 'https://pncp.gov.br/app/editais/mock-001',
+    documentType: 'EDITAL',
+    organization: 'Prefeitura Municipal de Treviso',
+    municipio: 'Treviso',
+    uf: 'SC',
+    processNumber: '12/2026',
+    editalNumber: '05/2026',
+    modalidade: 'Pregão Eletrônico',
+    publicationDate: '2026-05-18',
+    inlineText: 'Item 12 - Caneta esferográfica azul Bic Cristal, corpo transparente, ponta média, tinta azul, unidade. Edital de aquisição de materiais de expediente.'
+  },
+  {
+    id: 'mock-002',
+    source: 'MOCK',
+    officialUrl: 'https://pncp.gov.br/app/atas/mock-002',
+    documentType: 'ATA_REGISTRO_PRECOS',
+    organization: 'Prefeitura Municipal de Treviso',
+    municipio: 'Treviso',
+    uf: 'SC',
+    processNumber: '13/2026',
+    editalNumber: '06/2026',
+    modalidade: 'Pregão Eletrônico',
+    publicationDate: '2026-04-20',
+    inlineText: 'Ata de registro de preços. Item 04 - Caneta esferográfica vermelha Bic Cristal, corpo transparente, unidade.'
+  },
+  {
+    id: 'mock-003',
+    source: 'MOCK',
+    officialUrl: 'https://compras.gov.br/mock-003',
+    documentType: 'HOMOLOGACAO',
+    organization: 'Secretaria de Educação de Santa Catarina',
+    municipio: 'Florianópolis',
+    uf: 'SC',
+    processNumber: '777/2026',
+    editalNumber: '22/2026',
+    modalidade: 'Pregão Eletrônico',
+    publicationDate: '2026-03-10',
+    inlineText: 'Resultado de julgamento. Item 18 - Marca-texto azul, ponta chanfrada, tinta fluorescente, unidade.'
+  },
+  {
+    id: 'mock-004',
+    source: 'MOCK',
+    officialUrl: 'https://pncp.gov.br/app/editais/mock-004',
+    documentType: 'EDITAL',
+    organization: 'Prefeitura Municipal de Siderópolis',
+    municipio: 'Siderópolis',
+    uf: 'SC',
+    processNumber: '88/2026',
+    editalNumber: '31/2026',
+    modalidade: 'Dispensa Eletrônica',
+    publicationDate: '2026-06-12',
+    inlineText: 'Contratação direta. Item 07 - Refil para caneta azul, compatível com modelo Bic Cristal, embalagem com 50 unidades.'
+  },
+  {
+    id: 'mock-005',
+    source: 'MOCK',
+    officialUrl: 'https://pncp.gov.br/app/editais/mock-005',
+    documentType: 'EDITAL',
+    organization: 'Prefeitura Municipal de Criciúma',
+    municipio: 'Criciúma',
+    uf: 'SC',
+    processNumber: '112/2026',
+    editalNumber: '40/2026',
+    modalidade: 'Pregão Eletrônico',
+    publicationDate: '2026-06-01',
+    inlineText: 'Item 21 - Notebook Dell Inspiron 15, processador Intel Core i5, memória RAM 16GB, SSD 512GB, tela 15 polegadas.'
+  },
+  {
+    id: 'mock-006',
+    source: 'MOCK',
+    officialUrl: 'https://pncp.gov.br/app/editais/mock-006',
+    documentType: 'CONTRATO_ADMINISTRATIVO',
+    organization: 'Prefeitura Municipal de Içara',
+    municipio: 'Içara',
+    uf: 'SC',
+    processNumber: '44/2026',
+    editalNumber: '17/2026',
+    modalidade: 'Pregão Eletrônico',
+    publicationDate: '2026-02-01',
+    inlineText: 'Contrato administrativo. Objeto: aquisição de notebook Lenovo Ideapad, processador i3, memória 4GB, HD 500GB.'
+  },
+  {
+    id: 'mock-007',
+    source: 'MOCK',
+    officialUrl: 'https://pncp.gov.br/app/editais/mock-007',
+    documentType: 'EDITAL',
+    organization: 'Prefeitura Municipal de Treviso',
+    municipio: 'Treviso',
+    uf: 'SC',
+    processNumber: '90/2026',
+    editalNumber: '33/2026',
+    modalidade: 'Pregão Eletrônico',
+    publicationDate: '2026-04-02',
+    inlineText: 'Item 03 - Papel sulfite A4 75g, branco, caixa com 10 resmas, formato 210x297mm.'
+  }
+];
