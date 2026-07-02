@@ -17,22 +17,33 @@ export class PNCPProvider implements ProcurementProvider {
     if (!this.enabled) return { documents: [], warnings: [] };
 
     try {
-      // Adapter intentionally isolated. PNCP endpoint versions may vary; keep mapping here only.
       const params = new URLSearchParams();
+
       if (query.dateFrom) params.set('dataInicial', query.dateFrom);
       if (query.dateTo) params.set('dataFinal', query.dateTo);
       if (query.uf) params.set('uf', query.uf);
-      params.set('pagina', '1');
-      params.set('tamanhoPagina', String(query.pageSize ?? 20));
 
-      const response = await fetch(`${this.baseUrl}/v1/contratacoes/publicacao?${params.toString()}`, {
-        headers: { accept: 'application/json' }
-      });
+      // MVP 01: usa Pregão Eletrônico como modalidade inicial controlada.
+      // No PNCP, exemplos públicos de consulta por publicação usam codigoModalidadeContratacao.
+      params.set('codigoModalidadeContratacao', process.env.PNCP_MODALIDADE ?? '8');
+
+      params.set('pagina', '1');
+      params.set('tamanhoPagina', String(Math.min(query.pageSize ?? 5, 5)));
+
+      const url = `${this.baseUrl}/v1/contratacoes/publicacao?${params.toString()}`;
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 20000);
+
+      const response = await fetch(url, {
+        headers: { accept: 'application/json' },
+        signal: controller.signal
+      }).finally(() => clearTimeout(timeout));
 
       if (!response.ok) {
         return {
           documents: [],
-          warnings: [{ source: this.source, message: `PNCPProvider returned HTTP ${response.status}. Check endpoint/version configuration.` }]
+          warnings: [{ source: this.source, message: `PNCPProvider returned HTTP ${response.status}. URL: ${url}` }]
         };
       }
 
